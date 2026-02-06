@@ -2,7 +2,10 @@ PREDEF:
   - preface.re
 
 CHAPS:
-  - article.re
+  - kusagi.re
+  - daccho.re
+  - shohei.re
+  - yabecchi.re
 
 APPENDIX:
 
