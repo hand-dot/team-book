@@ -1,8 +1,9 @@
 PREDEF:
-  - preface.re
+  - chapters/00-hajimeni.re
 
 CHAPS:
-  - article.re
+  # ここに章を追加していく
+  # 例: - chapters/01-owasp-top10.re
 
 APPENDIX:
 
