@@ -684,15 +684,17 @@ git reflog expire --expire=now --all && git gc --prune=now --aggressive
 > 「環境変数に入れたから安全」ではありません。フロントエンドの環境変数はビルド時に文字列として埋め込まれます。APIキーは必ずサーバーサイドで管理し、漏洩したキーは速やかにローテーションしてください。
 
 
-## ケース6: 脆弱な依存関係
+## ケース6: 脆弱な依存関係とサプライチェーン攻撃
 
 **OWASP カテゴリ**: A03:2025（ソフトウェアサプライチェーンの失敗）
 
 ### この脆弱性について
 
-**ソフトウェアサプライチェーンの失敗（Software Supply Chain Failures）**は、アプリケーションが依存するライブラリやフレームワークに既知の脆弱性（CVE）が含まれている問題です。2021年版では「脆弱で古くなったコンポーネント」（6位）という名称でしたが、2025年版ではサプライチェーン攻撃の急増を受けて3位に上昇し、対象範囲もビルドパイプラインの侵害やパッケージの改ざんまで拡大されました。
+**ソフトウェアサプライチェーンの失敗（Software Supply Chain Failures）**は、アプリケーションが依存するライブラリやフレームワークに既知の脆弱性（CVE）が含まれている問題、そしてサプライチェーン攻撃によって正規のパッケージが汚染されるリスクを含みます。2021年版では「脆弱で古くなったコンポーネント」（6位）でしたが、2025年版ではサプライチェーン攻撃の急増を受けて3位に上昇し、対象範囲もビルドパイプラインの侵害やパッケージの改ざんまで拡大されました。
 
-コーディングエージェントは、学習データに含まれる時点のライブラリバージョンを参照してコードを提案します。つまり、学習後に発見されたCVEは考慮できません。`npm install`した瞬間に脆弱性が持ち込まれる可能性があります。さらに、2025年9月には`debug`（週3.6億ダウンロード）や`chalk`（週3億ダウンロード）を含む18のnpmパッケージが開発者アカウントの乗っ取りによって汚染される事件が発生しており、誰もがサプライチェーン攻撃の標的になり得ることが示されました。
+コーディングエージェントは、学習データに含まれる時点のライブラリバージョンを参照してコードを提案するため、学習後に発見されたCVEは考慮できません。`npm install`した瞬間に脆弱性が持ち込まれる可能性があります。
+
+さらに深刻なのは、**これまで普通に使っていた正規のライブラリが突然攻撃の入口に変わる**ケースです。2025年9月には`debug`（週3.6億ダウンロード）や`chalk`（週3億ダウンロード）を含む18のnpmパッケージが開発者アカウントの乗っ取りにより汚染されました。同年11月には「Shai-Hulud 2.0」と呼ばれるnpm史上最悪級のサプライチェーン攻撃が発生し、正規パッケージのメンテナー認証情報を盗んで悪意あるバージョンをnpmに公開するという手口で急速に拡散しました。Shai-Hulud 2.0は`preinstall`スクリプトを起点に感染し、開発者のマシンからAWS/GCP/Azure認証情報、GitHub Actionsシークレット、環境変数を窃取。さらにGitHubアカウントにセルフホストランナーを登録してバックドアを設置するという、極めて巧妙な攻撃でした。
 
 ### どのように検査したか
 
@@ -716,6 +718,18 @@ npm audit
 
 `npm audit`は30秒で終わります。これだけで既知のCVEが検出できます。
 
+#### OSV-Scanner でより広範にスキャンする
+
+[OSV-Scanner](https://google.github.io/osv-scanner/)はGoogleが運営するOSV（Open Source Vulnerabilities）データベースを使った脆弱性スキャナーです。`npm audit`はnpmのAdvisory DBしか参照しませんが、OSV-ScannerはGitHub Advisory、NVD、その他複数のソースを統合したデータベースを使うため、**カバー範囲が広い**のが特徴です。
+
+```bash
+# インストール
+brew install osv-scanner
+
+# スキャン
+osv-scanner --lockfile package-lock.json
+```
+
 #### Trivy でコンテナを含む包括的スキャンを行う
 
 [Trivy](https://trivy.dev/)はファイルシステム、コンテナイメージ、IaCなど幅広い対象をスキャンできるツールです。
@@ -724,17 +738,8 @@ npm audit
 # ファイルシステム全体をスキャン
 trivy fs .
 
-# Dockerイメージのスキャン
+# Dockerイメージのスキャン（ベースイメージの脆弱性も検出）
 trivy image my-rag-app:latest
-
-# 出力例:
-# package-lock.json (npm)
-# Total: 4 (HIGH: 3, CRITICAL: 1)
-# ┌──────────┬────────────────┬──────────┬───────────────────┐
-# │ Library  │ Vulnerability  │ Severity │ Fixed Version     │
-# ├──────────┼────────────────┼──────────┼───────────────────┤
-# │ lodash   │ CVE-2021-23337 │ CRITICAL │ 4.17.21           │
-# └──────────┴────────────────┴──────────┴───────────────────┘
 ```
 
 ### 何が起きたか
@@ -763,20 +768,120 @@ trivy image my-rag-app:latest
 | Prototype Pollution | オブジェクト汚染による認証バイパスやRCE |
 | ReDoS（正規表現DoS） | 入力1つでサーバーが応答不能に |
 | パストラバーサル | サーバー上の任意ファイルの読み取り |
-| サプライチェーン攻撃（パッケージ改ざん） | バックドアの設置、データの窃取 |
+| サプライチェーン攻撃（Shai-Hulud型） | クラウド認証情報・GitHub Actionsシークレットの窃取、バックドア設置 |
 
-### 対策
+### 対策：多層防御アプローチ
 
-**1. CI/CDパイプラインへのスキャン統合（最優先）**
+サプライチェーン攻撃への対策は、1つの手段で完結しません。**入れない・実行させない・見逃さない**の3層で考えます。
+
+| 層 | 考え方 | 防御対象 |
+|----|--------|----------|
+| 層1 | 入れない | 改ざんされたパッケージの拡散を抑制 |
+| 層2 | 実行させない | 入ってしまっても悪意あるコードを動かさない |
+| 層3 | 見逃さない | 既知の脆弱性を継続的に検知 |
+
+#### 層1: 改ざんパッケージを入れない — minimum-release-age
+
+SCAツール（npm audit等）は「既知の脆弱性」しか検知できません。まだAdvisoryに載っていない改ざんパッケージに対しては無力です。そこで**時間を味方につけます**。
+
+悪意あるパッケージは、多くのケースで公開から数日以内にコミュニティやセキュリティ研究者が発見します。数日間のバッファを設けることで「ゼロデイ期間」を避けられます。
+
+**pnpmの場合:**
+
+```yaml
+# pnpm-workspace.yaml
+minimumReleaseAge: 2880  # 2880分 = 2日
+```
+
+公開から2日経っていないバージョンはインストールを拒否します。Shai-Hulud 2.0は発覚まで数日かかりましたが、多くの攻撃は数日以内に検知・公表されるため、このバッファが効果的です。
+
+**npm/yarn/bunの場合 — [Aikido Safe Chain](https://github.com/AikidoSec/safe-chain):**
+
+```bash
+# インストール
+npm install -g @aikidosec/safe-chain
+
+# シェル統合のセットアップ
+safe-chain setup
+
+# 以降は通常通りnpmを使うだけ
+npm install express
+```
+
+Aikido Safe Chainはデフォルトで公開から24時間以内のパッケージをブロックし、Aikido Intelデータベースに対してリアルタイムでマルウェア検証も行います。CI/CDにも組み込めます。
 
 ```yaml
 # GitHub Actions
-- name: Security audit
-  run: npm audit --audit-level=high
-  # highレベル以上の脆弱性があればCIを失敗させる
+- name: Setup safe-chain
+  run: |
+    npm i -g @aikidosec/safe-chain
+    safe-chain setup-ci
+
+- name: Install dependencies
+  run: npm ci
 ```
 
-**2. Dependabotによる自動更新**
+#### 層2: 悪意あるコードを実行させない — ignore-scripts
+
+minimum-release-ageで待っても攻撃が発覚しなかった場合、あるいは緊急で新しいバージョンをインストールしなければならない場合の**最終防衛線**です。
+
+Shai-Hulud 2.0は`preinstall`スクリプトを起点として感染します。
+
+```json
+{
+  "scripts": {
+    "preinstall": "node setup_bun.js"
+  }
+}
+```
+
+`npm install`を実行した瞬間に悪意あるコードが実行されるわけですが、`.npmrc`に以下を追加すればスクリプトは動きません。
+
+```ini
+# .npmrc
+ignore-scripts=true
+```
+
+パッケージのコードはインストールされるが、preinstall/postinstallスクリプトは実行されない。[OWASP NPM Security Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/NPM_Security_Cheat_Sheet.html)でも推奨されている設定です。
+
+**「ネイティブモジュールのビルドは？」** — bcrypt、sqlite3、sharpなどのネイティブモジュールはpostinstallスクリプトでC/C++コードをコンパイルするため、スクリプト実行が必要です。しかしnpmレジストリのほとんどのパッケージはインストールスクリプトを必要としません。解決策は**ホワイトリスト方式**です。
+
+**pnpm v10の場合**（デフォルトで安全）: 依存パッケージのライフサイクルスクリプトはデフォルトで実行されません。ネイティブモジュールを使う場合のみ`package.json`で許可します。
+
+```json
+{
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild", "sharp"]
+  }
+}
+```
+
+**npmの場合** — [@lavamoat/allow-scripts](https://github.com/LavaMoat/LavaMoat/tree/main/packages/allow-scripts): OWASP NPM Security Cheat Sheetでも紹介されているホワイトリスト管理ツールです。
+
+```json
+{
+  "lavamoat": {
+    "allowScripts": {
+      "sharp": true,
+      "bcrypt": true
+    }
+  }
+}
+```
+
+#### 層3: 既知の脆弱性を見逃さない — SCAツール + 自動更新
+
+**CI/CDパイプラインへのスキャン統合:**
+
+```yaml
+# GitHub Actions — OSV-Scannerの場合
+- name: Run OSV-Scanner
+  uses: google/osv-scanner-action@v1
+  with:
+    scan-args: --lockfile package-lock.json
+```
+
+**Dependabotによる自動更新:**
 
 ```yaml
 # .github/dependabot.yml
@@ -791,24 +896,7 @@ updates:
 
 Dependabotはセキュリティアドバイザリを検知すると、修正バージョンへのアップデートPRを自動作成してくれます。
 
-**3. pnpmのminimumReleaseAgeで新しすぎるパッケージを避ける**
-
-```
-# .npmrc
-minimum-release-age=3d
-```
-
-リリースされてから3日未満のパッケージバージョンはインストールしない設定です。先述のnpmパッケージ汚染事件は数時間で修正されたため、この設定があれば影響を回避できた可能性が高いです。
-
-**4. コーディングエージェントへの指示に含める**
-
-```
-使用するパッケージは最新の安定版を使用してください。
-package.jsonに新しいパッケージを追加する際は、npm auditで脆弱性がないか確認してください。
-メンテナンスが活発で、十分なダウンロード数があるパッケージを選定してください。
-```
-
-> `npm audit`は30秒で終わります。CI/CDに1行追加するだけで、既知の脆弱性を自動で検出できます。依存関係の脆弱性は「自分が書いたコードではない」ために見落とされがちですが、被害は同じです。
+> 完璧な防御は存在しませんが、**入れない（minimum-release-age）・実行させない（ignore-scripts）・見逃さない（SCAツール）**の3層を組み合わせることで、サプライチェーン攻撃の被害を大幅に減らせます。依存関係の脆弱性は「自分が書いたコードではない」ために見落とされがちですが、被害は同じです。
 
 
 ## ケース7: サーバーサイドリクエストフォージェリ（SSRF）
