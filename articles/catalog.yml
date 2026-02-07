@@ -1,9 +1,7 @@
-PREDEF:
-  - chapters/00-hajimeni.re
-
 CHAPS:
   # ここに章を追加していく
-  # 例: - chapters/01-owasp-top10.re
+  - 00-hajimeni.re
+  # - chapters/00-hajimeni.re
 
 APPENDIX:
 
