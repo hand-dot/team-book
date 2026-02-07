@@ -1,7 +1,9 @@
+PREDEF:
+  - 00-hajimeni.re
+
 CHAPS:
   # ここに章を追加していく
-  - 00-hajimeni.re
-  # - chapters/00-hajimeni.re
+  # - 01-hoge.re
 
 APPENDIX:
 
